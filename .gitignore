@@ -4,6 +4,7 @@ docker_cmd
 
 # rust
 target/
+output
 
 # python
 *.pyc
