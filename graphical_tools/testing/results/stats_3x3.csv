@@ -1,0 +1,12 @@
+stat,value
+N,9
+p_hit,0.001953125
+median_theoretical,354.54
+mean_theoretical,512.00
+runs,1000
+hits,713
+censored_na,287
+median_empirical,263.00
+mean_empirical,282.43
+min_empirical,0
+max_empirical,707

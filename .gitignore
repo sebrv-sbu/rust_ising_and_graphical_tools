@@ -1,0 +1,17 @@
+#universal
+docker_cmd
+.DS_Store
+
+# rust
+target/
+
+# python
+*.pyc
+*.pyo
+__pycache__/
+*.pdf
+*.png
+.venv/
+venv/
+*.egg-info/
+testing/*
