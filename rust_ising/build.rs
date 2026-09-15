@@ -64,7 +64,7 @@ fn main(){
     .collect::<Vec<_>>()
     .join(", ");
   write(Path::new(&out_dir).join("weights.rs"),
-    format!("pub const INTEGRAL_WEIGHTS: [f64; {n}] = [{weights_src}];\n"))
+    format!("pub const INTEGRAL_WEIGHTS: [f64; {}] = [{weights_src}];\n", n))
     .unwrap();
   println!("cargo:rerun-if-env-changed=ISING_DIM");
 }

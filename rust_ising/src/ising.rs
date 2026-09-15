@@ -2,12 +2,17 @@ use std::env;
 include!(concat!(env!("OUT_DIR"),"/dim.rs"));
 include!(concat!(env!("OUT_DIR"),"/weights.rs"));
 use rand::RngExt;
+use bitvec::prelude::*;
 
 macro_rules! weight_coord_base {
   ($i:expr, $j:expr, $deg:expr) => { ($deg * $i + $j) };
 }
 
+pub type Bits = BitSlice<usize, LocalBits>;
+
 pub trait Ising{
+  fn init_cost(&mut self);
+  fn init_spins(&mut self);
   fn n_points(&self) -> usize;
   fn cost_diff(&self, node:usize) -> f64;
   fn flip_spin(&mut self, node:usize);
@@ -15,7 +20,14 @@ pub trait Ising{
   fn deg(&self) -> usize;
   fn anneal(&mut self, temp:f64);
   fn inf_anneal(&mut self);
-  fn config(&self)->&Vec<bool>;
+  fn config(&self)->&BitVec;
+  fn neighbours(&mut self, node:usize) -> Vec<usize>;
+  fn cluster_cost(&mut self, 
+    temperature: f64,
+    center:usize,
+    cluster: &Bits,
+    ground_opt: Option<&Bits>,
+    ground_center_opt:Option<bool>) -> f64;
  }
 
 enum Layout {Disjoint, Packed}
@@ -36,7 +48,7 @@ pub struct IsingEdge {
 }
 
 pub struct StartingConfig{
-  pub config:Vec<bool>,
+  pub config:BitVec,
   pub weight:f64
 }
 
@@ -44,7 +56,7 @@ pub struct IsingDisjoint {
   pub deg: usize,
   sizes: Vec<usize>,
   pub n_points: usize,
-  pub spins: Vec<bool>,
+  pub spins: BitVec,
   edges: Vec<IsingEdge>,
   magnetic_field:Vec<f64>,
   pub cost: f64,
@@ -59,7 +71,7 @@ impl IsingDisjoint {
       .fold(1, |prod, size| prod * size);
     let cost = 0.0;
     let magnetic_field= Vec::<f64>::new();
-    let spins = Vec::<bool>::new();
+    let spins = BitVec::new();
     let edges = Vec::<IsingEdge>::new();
     let deg = dim*2;
     IsingDisjoint{ deg, sizes, n_points, cost, magnetic_field, spins, edges,
@@ -81,7 +93,7 @@ impl IsingDisjoint {
       let mut row_edges = Vec::new();
       let start = weight_coord(node, 0);
       let end = weight_coord(node, self.deg);
-      let neighbours = self.neighbours(node);
+      let neighbours = self.neighbours_disjoint(node);
       for (&neighbour, &weight) in neighbours
           .iter()
           .zip(&weights[start..end]){
@@ -131,7 +143,7 @@ impl IsingDisjoint {
       })
       .0
   }
-  pub fn neighbours(&self, node:usize) -> Vec<usize>{
+  pub fn neighbours_disjoint(&self, node:usize) -> Vec<usize>{
     let mut neighbours = Vec::<usize>::new();
     let mut node_coord = self.to_coord(node);
     for i in 0..self.sizes.len(){
@@ -148,7 +160,7 @@ impl IsingDisjoint {
     }
     neighbours
   }
-  pub fn init_cost(&mut self){
+  pub fn init_cost_disjoint(&mut self){
     self.cost = 
       (0..self.n_points)
       .fold(0.0, |cost, node| {
@@ -167,7 +179,7 @@ impl IsingDisjoint {
       cost + magnetic + interaction / 2.0
     });
   }
-  pub fn init_spins(&mut self){
+  pub fn init_spins_disjoint(&mut self){
     let Some(configs) = &self.starting_configs else {
       self.init_spins_unif();
       return;
@@ -188,7 +200,7 @@ impl IsingDisjoint {
       .map(|_| rand::rng().random_bool(0.5))
       .collect();
   }
-  fn set_spins(&mut self, spins:Vec<bool>){
+  fn set_spins(&mut self, spins:BitVec){
     self.spins = spins;
   }
 
@@ -212,36 +224,40 @@ impl IsingDisjoint {
     let delta = self.cost_diff_disjoint(node);
     if delta < 0.0 || (-delta / temp).exp() > rand::rng()
       .random_range(0.0..1.0) {
-      self.spins[node] = !self.spins[node];
+      let flipped = !self.spins[node];
+      self.spins.set(node, flipped);
       self.cost += delta;
       }  
   }
   fn inf_anneal_disjoint(&mut self){
     let node:usize = rand::rng().random_range(0..self.n_points);
     let delta = self.cost_diff_disjoint(node);
-    self.spins[node] = !self.spins[node];
+    let flipped = !self.spins[node];
+    self.spins.set(node, flipped);
     self.cost += delta;
   }
-  fn cluster_cost(&mut self,
+  fn cluster_cost_disjoint(&mut self,
     temperature:f64,
     center:usize,
-    cluster: &[bool], 
-    ground_opt: Option<&[bool]>)
+    cluster: &Bits, 
+    ground_opt: Option<&Bits>,
+    ground_center_opt:Option<bool>
+    )
     -> f64 {
     // e^{-|E_c|/T}(-1)^{E_c^-<E_c^+}
     let m:usize;
-    let ground_center_bit:bool;
+    let ground_center_bit = ground_center_opt.unwrap_or(false);
     if let Some(ground) = ground_opt{
       m = cluster.iter()
-        .zip(ground.iter())
+        .by_vals()
+        .zip(ground.iter().by_vals())
         .fold(0, |omega, (clust_bit, ground_bit)|
           omega + (clust_bit ^ ground_bit) as usize
         );
-        ground_center_bit = ground[0];
     } else {
       m = cluster.iter()
-        .fold(0, |omega, clust_bit| omega + *clust_bit as usize);
-      ground_center_bit = false;
+        .by_vals()
+        .fold(0, |omega, clust_bit| omega + clust_bit as usize);
     }
     let cluster_weight = integral_weight(m)
       .expect("ising.rs error: m is out of range");
@@ -254,12 +270,16 @@ impl IsingDisjoint {
     });
     let mag_diff = ((2 * (ground_center_bit) as i32 - 1) as f64) * 
       self.magnetic_field[center];
-    cluster_weight * (1.0 - (2.0 * (interaction_diff + mag_diff).abs()/
-      temperature).exp())
+    let energy_diff = interaction_diff + mag_diff;
+    let sign = if energy_diff > 0.0 { -1.0 } else { 1.0 };
+    sign * cluster_weight *
+      (1.0 - (-2.0 * energy_diff.abs() / temperature).exp())
+
   }
   fn flip_spin_disjoint(&mut self, node:usize){
     self.cost = self.cost + self.cost_diff_disjoint(node);
-    self.spins[node] = !self.spins[node];
+    let flipped = !self.spins[node];
+    self.spins.set(node, flipped);
   }
 }
 
@@ -284,7 +304,7 @@ impl Ising for IsingDisjoint {
   fn inf_anneal(&mut self){
     self.inf_anneal_disjoint();
   }
-  fn config(&self)->&Vec<bool>{
+  fn config(&self)->&BitVec{
     &self.spins
   }
   fn flip_spin(&mut self, node:usize){
@@ -295,5 +315,26 @@ impl Ising for IsingDisjoint {
   }
   fn deg(&self)->usize{
     self.deg
+  }
+  fn cluster_cost(&mut self,
+    temperature:f64,
+    center:usize,
+    cluster: &Bits,
+    ground_opt:Option<&Bits>,
+    ground_center_opt:Option<bool>) -> f64{
+    self.cluster_cost_disjoint(temperature,
+      center,
+      cluster,
+      ground_opt,
+      ground_center_opt)
+  }
+  fn neighbours(&mut self, node:usize) -> Vec<usize>{
+    self.neighbours_disjoint(node)
+  }
+  fn init_spins(&mut self){
+    self.init_spins_disjoint();
+  }
+  fn init_cost(&mut self){
+    self.init_cost_disjoint();
   }
 }

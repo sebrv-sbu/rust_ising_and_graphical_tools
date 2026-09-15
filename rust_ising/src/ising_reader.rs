@@ -2,6 +2,7 @@ use std::io::{BufReader, BufRead};
 use std::path::Path;
 use crate::ising::*;
 use std::fs::File;
+use bitvec::prelude::*;
 
  macro_rules! local_index { 
   ($rel_index:expr) => 
@@ -163,16 +164,18 @@ pub fn from_ising_file_disjoint_simple(path: impl AsRef<Path>) ->
           .expect("Error: No integer detected")
         );
         }
-      let config_u64:Vec<u64> = hex.chunks(8)
+      let chunk_size = std::mem::size_of::<usize>();
+      let config_usize:Vec<usize> = hex.chunks(chunk_size)
         .map(|chunk| {
           chunk.iter()
             .enumerate()
-            .fold(0u64, |acc, (i, &byte)|{
-              acc | ((byte as u64) << i*8)
+            .fold(0usize, |acc, (i, &byte)|{
+              acc | ((byte as usize) << i*8)
             })
           })
         .collect();
-      let starting_config = u64_to_config(config_u64, ising_instance.n_points);
+      let starting_config = usize_to_config(config_usize, 
+        ising_instance.n_points);
       let prob = line.next()
         .expect("Could not find probability associated with starting 
           configuration")
@@ -192,8 +195,8 @@ pub fn from_ising_file_disjoint_simple(path: impl AsRef<Path>) ->
     starting_configs=Some(starting_configs_base)
   }
   else {
-    println!("Warning: Starting Configurations not found. Defaulting
-      to random Starting Configurations");
+    println!("Warning: Starting Configurations not found. Defaulting \
+to random Starting Configurations");
     starting_configs = None;
   }
   ising_instance.set_starting_configs(starting_configs);
@@ -201,33 +204,11 @@ pub fn from_ising_file_disjoint_simple(path: impl AsRef<Path>) ->
   ising_instance.init_cost();
   (ising_instance, temp)
 }
-fn boolvec_to_64_vec(boolvec:Vec<bool>)->Vec<u64>{
-  boolvec.chunks(64)
-  .map(|chunk| {
-    chunk.iter()
-      .enumerate()
-      .fold(0u64, |acc, (i, &bit)|{
-        if bit { 
-          acc | 1 << i
-        } else {
-          acc
-        }
-      })
-  })
-  .collect()
-}
 
-fn u64_to_config(uvec:Vec<u64>, n_points:usize)->Vec<bool>{
-    uvec.iter()
-    .flat_map(|&uvec_chunk| {
-      let mut config_section = vec![false; 64];
-      for i in 0..64{
-        config_section[i] = (uvec_chunk & (1u64 << i)) != 0;
-        }
-      config_section
-      })
-  .take(n_points)
-  .collect()
+fn usize_to_config(uvec:Vec<usize>, n_points:usize)->BitVec{
+    let mut bit_vec = BitVec::from_vec(uvec);
+    bit_vec.truncate(n_points);
+    bit_vec
 }
 
 
