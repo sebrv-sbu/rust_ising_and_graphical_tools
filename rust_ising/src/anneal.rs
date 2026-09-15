@@ -89,3 +89,67 @@ pub fn stationary_finite_temperature<I:Ising>(
   }
   None
 }
+
+pub fn approx_num_steps_for_percent<I:Ising>(
+  ising: &mut I,
+  percent_opt:Option<f64>,
+  temperature_opt:Option<f64>,
+  log_2_perturbation_and_sign_opt: Option<(f64, bool)>,
+  ground_state_opt:&Option<BitVec>,
+  ) -> Result<usize, String>{
+  /* We will have to use some rust things to do this in *
+   * a numerically stable way                           */
+  let log_2_perturbation:f64;
+  let sign:bool;
+  if let Some(log_2_perturbation_and_sign) = log_2_perturbation_and_sign_opt{
+    log_2_perturbation = log_2_perturbation_and_sign.0;
+    sign=log_2_perturbation_and_sign.1;
+    if ground_state_opt.is_some(){
+    eprintln!("anneal.rs warning: Ground State provided to \
+      approx_num_steps_for_percent is being ignored");
+    } 
+    if temperature_opt.is_some(){
+      eprintln!("anneal.rs warning: Temperature \
+      provided to approx_num_steps_for_percent is being ignored");
+    }
+  } else {
+    match temperature_opt{
+      None => {
+      return Err("anneal.rs error: neither log_2_perturbation nor \
+        temperature was provided to approx_num_steps_for_percent. Cannot \
+        compute without at least one of these being present.".to_string());
+      }
+      Some(temperature) => {
+      (sign, log_2_perturbation)= theoretical_perturbation_naive(
+      ising,
+      ground_state_opt,
+      temperature);
+      }
+    }
+  }
+   /* Now we will implement $1-(1-x)^t=p$ for p as the target percent. Here, *
+    * we can solve and this gives $t=\ln(1-target)/\ln(1-x)$. We use log2    *
+    * since we are given values in log base 2 anyway rather than ln.         *
+    *                                                                        *
+    * We borrow rust's ln_1p here which is optimized for logarithms of       *
+    * numbers close to 1 and then solve.                                     */
+  let percent = percent_opt.unwrap_or(0.25);
+  if percent >= 1.0 || percent <= 0.0{
+    return Err(format!("anneal.rs error: percentage {percent} outside [0,1], \
+    something must have gone wrong."));
+  }
+  let log2_1p = |y:f64| y.ln_1p() * std::f64::consts::LOG2_E;
+  let x = log_2_perturbation.exp2()
+    .copysign(if sign {-1.0} else {1.0}) - (-(ising.n_points() as f64)).exp2();
+  
+  let log2_q = log2_1p(x);
+  let log2_fail_target = log2_1p(-percent);
+
+  let t = log2_fail_target/log2_q;
+  if x > 0.0 || x < -1.0 {
+    return Err(format!("anneal.rs error: computed per-step rate x = {x} \
+        outside [0,1] — perturbation may exceed base rate; result may not be \
+        physically meaningful."));
+  }
+  Ok(t as usize)
+}

@@ -4,12 +4,11 @@ mod anneal;
 use crate::ising_reader::*;
 use crate::anneal::*;
 use crate::ising::*;
-use clap::{Parser,Subcommand};
+use clap::{Parser,Subcommand,ArgAction};
 use std::fs::File;
 use std::path::PathBuf;
 use std::io::{Write,BufWriter};
 use bitvec::prelude::*;
-use std::process;
 
 #[derive(Parser)]
 #[command(about = "Implementation of High Temperature Simulated \
@@ -36,6 +35,13 @@ enum Mode{
   HighConv{
     #[arg(short = 'T', long = "temperature_override", default_value = None)]
     temperature_override:Option<f64>,
+    #[arg(short = 'p', long = "percent", default_value = None)]
+    percent_opt:Option<f64>,
+    #[arg(short = 't', long = "approx_hitting_time",
+      action = ArgAction::SetTrue)]
+    compute_approx_hitting_time:bool,
+    #[arg(short = 'r', long ="human_readable", action = ArgAction::SetTrue)]
+    human_readable:bool,
   },
   #[command(about = "Finite Temperature Experiments")]
   FiniteT{
@@ -46,7 +52,7 @@ enum Mode{
     max_steps:usize,
     #[arg(short = 'r', long = "runs", default_value = "100")]
     runs:usize,
-    #[arg(short = 'T', long = "temperature_override", default_value="None")]
+    #[arg(short = 'T', long = "temperature_override", default_value=None)]
     temperature_override: Option<f64>,
   }
 }
@@ -138,7 +144,12 @@ fn main(){
         stationary_file_name,
         temperature);
     }
-    Mode::HighConv{temperature_override} => {
+    Mode::HighConv{
+      temperature_override,
+      percent_opt,
+      compute_approx_hitting_time,
+      human_readable,
+    } => {
       let temperature:f64;
       match temperature_override{
         Some(temperature_opt) => { 
@@ -152,8 +163,31 @@ fn main(){
         &mut ising_model,
         &None,
         temperature);
-      println!("log absolute perturbation:{}", log_sum);
-      println!("sign:{}", if sign {"-"} else {"+"});
+      if human_readable{
+        println!("log2 absolute perturbation:{}", log_sum);
+        println!("sign:{}", if sign {"-"} else {"+"});
+      } else {
+        println!("{}, {}", log_sum, if sign {"-"} else {"+"});
+      }
+      if compute_approx_hitting_time{
+        match approx_num_steps_for_percent(
+          &mut ising_model,
+          percent_opt,
+          None,
+          Some((log_sum, sign)),
+          &None) {
+          Ok(steps) => {
+            let percent=percent_opt.unwrap_or(0.25);
+            if human_readable {
+              println!("Takes ~ {steps} steps to have {percent} \
+              probability of hitting")
+            } else {
+              println!("{}, {}", steps, percent);
+            }
+          },
+          Err(e) => eprintln!("{e}"),
+        }
+      }
     }
   }
 }

@@ -185,7 +185,7 @@ pub fn from_ising_file_disjoint_simple(path: impl AsRef<Path>) ->
       #[cfg(debug_assertions)]
       {
         if prob > 1.0{
-          println!("Warning: Weight greater than 1.");
+          eprintln!("ising_reader.rs warning: Weight greater than 1.");
           }
       }
       starting_configs_base.push(StartingConfig{
@@ -195,8 +195,8 @@ pub fn from_ising_file_disjoint_simple(path: impl AsRef<Path>) ->
     starting_configs=Some(starting_configs_base)
   }
   else {
-    println!("Warning: Starting Configurations not found. Defaulting \
-to random Starting Configurations");
+    eprintln!("ising_reader.rs warning: Starting Configurations not found. \
+      Defaulting to random Starting Configurations");
     starting_configs = None;
   }
   ising_instance.set_starting_configs(starting_configs);
