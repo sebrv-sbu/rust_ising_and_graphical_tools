@@ -1,14 +1,17 @@
 mod ising;
-mod ising_reader;
+mod ising_io;
 mod anneal;
-use crate::ising_reader::*;
+mod greedy;
+use crate::ising_io::*;
 use crate::anneal::*;
 use crate::ising::*;
+use crate::greedy::*;
 use clap::{Parser,Subcommand,ArgAction};
 use std::fs::File;
 use std::path::PathBuf;
 use std::io::{Write,BufWriter};
 use bitvec::prelude::*;
+use anyhow::Result;
 
 #[derive(Parser)]
 #[command(about = "Implementation of High Temperature Simulated \
@@ -30,6 +33,9 @@ enum Mode{
     max_steps:usize,
     #[arg(short = 'r', long = "runs", default_value = "100")]
     runs:usize,
+    #[arg(short = 'g', long = "ground_state_provided", 
+      action = ArgAction::SetTrue)]
+    ground_state_provided:bool,
   },
   #[command(about = "Theoretical Convergence Rate, High Temperature")]
   HighConv{
@@ -54,7 +60,21 @@ enum Mode{
     runs:usize,
     #[arg(short = 'T', long = "temperature_override", default_value=None)]
     temperature_override: Option<f64>,
-  }
+    #[arg(short = 'g', long = "hitting_time_with_ground_state", 
+      action = ArgAction::SetTrue)]
+    ground_state_provided:bool,
+  },
+  #[command(about="Approximate Ground State with Greedy Algorithm")]
+  GroundStateApprox{
+    #[arg(short='o', long="outer_sweeps", default_value="10")]
+    outer_sweeps:usize,
+    #[arg(short='i', long="inner_sweeps", default_value="10")]
+    inner_sweeps:usize,
+    #[arg(short='r', long="human_readable", action=ArgAction::SetTrue)]
+    human_readable:bool,
+    #[arg(short='w', long="modify_input_file", action=ArgAction::SetTrue)]
+    modify_input_file:bool,
+  },
 }
 
 fn finite_temperature_option<I:Ising>(
@@ -62,25 +82,47 @@ fn finite_temperature_option<I:Ising>(
   max_steps: usize,
   runs: usize,
   stationary_file_name: PathBuf,
-  temperature:f64
+  temperature:f64,
+  ground_state_opt:Option<BitVec>,
+  ground_state_provided:bool,
   ){
   let stationary_file = File::create(stationary_file_name).expect("main.rs\
-Error:could not create new stationary file");
+    error:could not create new stationary file");
   let mut stationary_out = BufWriter::new(stationary_file);
-  let all_zeros = bitvec![usize, LocalBits; 0; ising_model.n_points()];
-  for _ in 0..runs{
-  let hitting_time = stationary_finite_temperature(
-    ising_model,
-    &all_zeros,
-    max_steps,
-    temperature
-  );
-    match hitting_time{
-      Some(steps) => writeln!(stationary_out, "{}", steps).unwrap(),
-      None => writeln!(stationary_out, "NA").unwrap()
+  if ground_state_provided{
+    if ground_state_opt.is_none(){
+      eprintln!("main.rs error: no ground state was provided. Running \
+        simulations with all 0s as ground state.");
+      return;
     }
-    ising_model.init_spins();
-    ising_model.init_cost();
+    let ground_state = ground_state_opt.unwrap();
+    for _ in 0..runs{
+    let hitting_time = stationary_finite_temperature_hit(
+      ising_model,
+      &ground_state,
+      max_steps,
+      temperature
+    );
+      match hitting_time{
+        Some(steps) => writeln!(stationary_out, "{}", steps).unwrap(),
+        None => writeln!(stationary_out, "NA").unwrap()
+      }
+      ising_model.init_spins();
+      ising_model.init_cost();
+    } 
+  } else {
+    writeln!(stationary_out, "{}\t{}\t{}\t{}", "best_configuration",
+      "best_cost", "best_cost_fpb", "hitting_time").unwrap();
+    for _ in 0..runs{
+      let (best_conf, best_cost, hit) 
+        = stationary_finite_temperature_optimise(
+          ising_model,
+          max_steps,
+          temperature);
+      let best_conf_string = bitvec_to_hex_string(&best_conf);
+      writeln!(stationary_out, "{}\t{:.6e}\t{:016x}\t{}", best_conf_string,
+        best_cost, best_cost.to_bits(), hit).unwrap();
+    }
   }
 }
 
@@ -88,46 +130,72 @@ fn infinite_temperature_option<I:Ising>(
   ising_model: &mut I,
   max_steps:usize,
   runs:usize,
-  stationary_file_name:PathBuf
+  stationary_file_name:PathBuf,
+  ground_state_opt:Option<BitVec>,
+  ground_state_provided:bool
   ){
   let stationary_file = File::create(stationary_file_name).expect("main.rs\
 Error:could not create new stationary file");
   let mut stationary_out = BufWriter::new(stationary_file);
-  let all_zeros = bitvec![usize, LocalBits; 0; ising_model.n_points()];
-  for _ in 0..runs{
-    let hitting_time = stationary_infinite_temperature(
-      ising_model,
-      &all_zeros,
-      max_steps
-      );
-    match hitting_time{
-      Some(steps) => writeln!(stationary_out, "{}", steps).unwrap(),
-      None => writeln!(stationary_out, "NA").unwrap()
+  if ground_state_provided{
+    if ground_state_opt.is_none(){
+      eprintln!("main.rs warning: no ground state was provided. Running \
+        simulations with all 0s as ground state.");
+      return;
     }
-    ising_model.init_spins();
-    ising_model.init_cost();
+    let ground_state = ground_state_opt.unwrap();
+    for _ in 0..runs{
+      let hitting_time = stationary_infinite_temperature_hit(
+        ising_model,
+        &ground_state,
+        max_steps
+        );
+      match hitting_time{
+        Some(steps) => writeln!(stationary_out, "{}", steps).unwrap(),
+        None => writeln!(stationary_out, "NA").unwrap()
+      }
+      ising_model.init_spins();
+      ising_model.init_cost();
+    }
+  } else {
+    writeln!(stationary_out, "{}\t{}\t{}\t{}", "best_configuration",
+      "best_cost", "best_cost_fpb", "hitting_time").unwrap();
+    for _ in 0..runs{
+      let (best_conf, best_cost, hit)
+        = stationary_infinite_temperature_optimise(
+          ising_model,
+          max_steps);
+      let best_conf_string = bitvec_to_hex_string(&best_conf);
+      writeln!(stationary_out, "{}\t{:.6e}\t{:016x}\t{}", best_conf_string,
+        best_cost, best_cost.to_bits(), hit).unwrap();
+    }
   }
 }
 
-fn main(){
+fn main() -> Result<()>{
   let args = Args::parse();
   let input_file = args.input_file;
-  let (mut ising_model, temperature_from_file)=from_ising_file_disjoint_simple(
-    input_file
+  let (mut ising_model, temperature_from_file, ground_state_opt) =
+    from_ising_file_disjoint_simple(
+    &input_file
   );
   match args.mode{
-    Mode::Inf{stationary_file_name, max_steps, runs} =>{
+    Mode::Inf{stationary_file_name, max_steps, runs, ground_state_provided} 
+    => {
       infinite_temperature_option(
         &mut ising_model,
         max_steps,
         runs,
-        stationary_file_name)
+        stationary_file_name,
+        ground_state_opt,
+        ground_state_provided)
       }
     Mode::FiniteT{
       stationary_file_name,
       max_steps,
       runs,
-      temperature_override} => {
+      temperature_override,
+      ground_state_provided} => {
       let temperature:f64;
       match temperature_override{
         Some(temperature_opt) => { 
@@ -142,7 +210,9 @@ fn main(){
         max_steps,
         runs,
         stationary_file_name,
-        temperature);
+        temperature,
+        ground_state_opt,
+        ground_state_provided);
     }
     Mode::HighConv{
       temperature_override,
@@ -161,7 +231,7 @@ fn main(){
       }
       let (sign, log_sum) = theoretical_perturbation_naive(
         &mut ising_model,
-        &None,
+        &ground_state_opt,
         temperature);
       if human_readable{
         println!("log2 absolute perturbation:{}", log_sum);
@@ -189,5 +259,56 @@ fn main(){
         }
       }
     }
+    Mode::GroundStateApprox{
+      inner_sweeps,
+      outer_sweeps,
+      human_readable,
+      modify_input_file
+    } => {
+      let ground_state_approx=greedy(
+        &mut ising_model,
+        inner_sweeps,
+        outer_sweeps);
+      if human_readable && modify_input_file {
+        eprintln!("main.rs error: human_readable and modify_input_files \
+          cannot both be set.");
+        std::process::exit(1);
+      }
+      if human_readable {
+        println!("Greedy algorithm found the following configuration:");
+        println!("{}",
+          ground_state_approx.iter()
+            .by_vals()
+            .map(|spin| if !spin {"-1"} else {"+1"})
+            .collect::<Vec<_>>()
+            .join(" ")
+        );
+        return Ok(());
+      }
+      let conf_len = ground_state_approx.len();
+      let config_str: String = ground_state_approx
+        .chunks(64)
+        .map(|chunk| { chunk.iter()
+          .by_vals()
+          .enumerate()
+          .fold(0u64, |n, (i, bit)| n | ((bit as u64) << i))
+        })
+        .flat_map(|num| num.to_le_bytes())
+        .take((conf_len + 7) / 8)
+        .map(|byte| format!("{:02x}", byte))
+        .collect::<Vec<String>>()
+        .join(" ");
+
+      if !modify_input_file{
+        println!("{}", config_str);
+       }
+      if modify_input_file{
+        write_ground_state(config_str, input_file)?;
+      }
+    }
   }
+  Ok(())
 }
+
+
+

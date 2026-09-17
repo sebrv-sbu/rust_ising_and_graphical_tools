@@ -1,7 +1,24 @@
 use crate::ising::*;
 use bitvec::prelude::*;
 
-pub fn stationary_infinite_temperature<I:Ising>(
+pub fn stationary_infinite_temperature_optimise<I:Ising>(
+  ising: &mut I,
+  max_steps:usize) -> (BitVec, f64, usize){
+  let mut step = 0;
+  (0..max_steps).fold(
+    (ising.config().clone(), ising.cost(),0),
+    |(min_conf, min_cost, hit), _|{
+      ising.inf_anneal();
+      step += 1;
+      if ising.cost() < min_cost{
+        (ising.config().clone(), ising.cost(), step)
+      } else {
+        (min_conf, min_cost, hit)
+      }
+    })
+}
+
+pub fn stationary_infinite_temperature_hit<I:Ising>(
   ising: &mut I, 
   ground_state: &BitVec,
   max_steps:usize) -> Option<usize>{
@@ -70,7 +87,27 @@ pub fn theoretical_perturbation_naive<I:Ising>(
       (ising.n_points() as f64).log2()
   )
 }
-pub fn stationary_finite_temperature<I:Ising>(
+
+pub fn stationary_finite_temperature_optimise<I:Ising>(
+  ising: &mut I,
+  max_steps:usize,
+  temperature:f64
+  )->(BitVec, f64, usize){
+  let mut step = 0;
+  (0..max_steps).fold(
+    (ising.config().clone(), ising.cost(), 0),
+    |(min_conf, min_cost, hit), _|{
+      ising.anneal(temperature);
+      step += 1;
+      if ising.cost() < min_cost{
+        (ising.config().clone(), ising.cost(), step)
+      } else {
+        (min_conf, min_cost, hit)
+      }
+    })
+}
+
+pub fn stationary_finite_temperature_hit<I:Ising>(
   ising: &mut I,
   ground_state: &BitVec,
   max_steps:usize,
